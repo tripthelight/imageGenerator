@@ -1,115 +1,67 @@
-from flask import Flask, request, redirect
+from flask import Flask, request, jsonify, send_from_directory
+import requests
+from dotenv import load_dotenv
+import os
+from translate import translate_to_english
+import logging
 
-app = Flask(__name__)
+logging.basicConfig(level=logging.DEBUG)
 
-nextId = 4
-topics = [
-  {'id': 1, 'title': 'html', 'body': 'html is ...'},
-  {'id': 2, 'title': 'css', 'body': 'css is ...'},
-  {'id': 3, 'title': 'javascript', 'body': 'javascript is ...'}
-]
+# .env 파일에서 환경 변수 로드
+load_dotenv()
 
-def template(contents, content, id=None):
-  contextUI = ''
-  if id != None:
-    contextUI = f'''
-      <li><a href="/update/{id}/">update</a></li>
-      <li><form action="/delete/{id}/" method="POST"><input type="submit" value="delete" /></form></li>
-    '''
-  return f'''
-    <!DOCTYPE html>
-    <html>
-    <body>
-      <h1><a href="/">WEB</a></h1>
-      <ol>
-        {contents}
-      </ol>
-      {content}
-      <ul>
-        <li><a href="/create/">Create</a></li>
-        {contextUI}
-      </ul>
-    </body>
-    </html>
-  '''
+# DALL-E API 키 설정
+API_KEY = os.getenv('API_KEY')
 
-def getContents():
-  liTags = ''
-  for topic in topics:
-    liTags = liTags + f'<li><a href="/read/{topic["id"]}/">{topic["title"]}</a></li>'
-  return liTags
+if not API_KEY:
+  raise ValueError("API key not found. Please set the API key in the .env file.")
+
+app = Flask(__name__, static_folder='../client', static_url_path='')
+
+# DALL-E API endpoint 설정
+API_URL = os.getenv('API_URL')
 
 @app.route('/')
-def index():
-  return template(getContents(), '<h2>Welcome</h2>Hello, Web')
+def serve_index():
+  return send_from_directory(app.static_folder, 'index.html')
 
-@app.route('/read/<int:id>/')
-def read(id):
-  title = ''
-  body = ''
-  for topic in topics:
-    if id == topic['id']:
-      title = topic['title']
-      body = topic['body']
-      break
-  return template(getContents(), f'<h2>{title}</h2>{body}', id)
+@app.route('/generate', methods=['POST'])
+def generate_image():
+  try:
+    data = request.get_json()
+    prompt = data.get('prompt')
 
-@app.route('/create/', methods=['GET', 'POST'])
-def create():
-  if request.method == 'GET':
-    content = '''
-      <form action="/create/" method="POST">
-        <p><input type="text" name="title" placeholder="title" /></p>
-        <p><textarea name="body" placeholder="body"></textarea></p>
-        <p><input type="submit" value="create" /></p>
-      </form>
-    '''
-    return template(getContents(), content)
-  elif request.method == 'POST':
-    global nextId
-    title = request.form['title']
-    body = request.form['body']
-    newTopic = {'id': nextId, 'title': title, 'body': body}
-    topics.append(newTopic)
-    url = '/read/' + str(nextId) + '/'
-    nextId = nextId + 1
-    return redirect(url)
+    # 한글 프롬프트를 영어로 번역
+    english_prompt = translate_to_english(prompt)
+    print(f'english_prompt ::::::: {english_prompt}')
 
-@app.route('/update/<int:id>/', methods=['GET', 'POST'])
-def update(id):
-  if request.method == 'GET':
-    title = ''
-    body = ''
-    for topic in topics:
-      if id == topic['id']:
-        title = topic['title']
-        body = topic['body']
-        break
-    content = f'''
-      <form action="/update/{id}/" method="POST">
-        <p><input type="text" name="title" placeholder="title" value="{title}" /></p>
-        <p><textarea name="body" placeholder="body">{body}</textarea></p>
-        <p><input type="submit" value="update" /></p>
-      </form>
-    '''
-    return template(getContents(), content)
-  elif request.method == 'POST':
-    title = request.form['title']
-    body = request.form['body']
-    for topic in topics:
-      if id == topic['id']:
-        topic['title'] = title
-        topic['body'] = body
-        break
-    url = '/read/' + str(id) + '/'
-    return redirect(url)
-  
-@app.route('/delete/<int:id>/', methods=['POST'])
-def delete(id):
-  for topic in topics:
-    if id == topic['id']:
-      topics.remove(topic)
-      break
-  return redirect('/')
+    headers = {
+      'Authorization': f'Bearer {API_KEY}',
+      'Content-Type': 'application/json'
+    }
+    payload = {
+      'prompt': english_prompt,
+      'size': '256x256',
+      'n': 1
+    }
+    response = requests.post(API_URL, headers=headers, json=payload)
+    
+    if response.status_code == 200:
+      result = response.json()
+      logging.debug(f"API Response: {result}")
+      if 'data' in result and len(result['data']) > 0:
+        image_url = result['data'][0]['url']
+        return jsonify({'image_url': image_url})
+      else:
+        return jsonify({'error': 'No image data returned'}), 500
+    else:
+      # API 응답에서 에러 메시지 추출
+      error_response = response.json()
+      logging.debug(f"API Error Response: {error_response}")
+      return jsonify({'error': error_response.get('error', {}).get('message', 'Unknown error')}), response.status_code
+  except Exception as e:
+    logging.error(f"Exception: {str(e)}")
+    return jsonify({'error': str(e)}), 500
 
-app.run(port=8081, debug=True)
+if __name__ == '__main__':
+  app.run(debug=True)
