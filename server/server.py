@@ -1,25 +1,13 @@
 from flask import Flask, request, jsonify, send_from_directory
-import requests
+import openai
+from openai import OpenAI
 from dotenv import load_dotenv
 import os
-from translate import translate_to_english
-import logging
 
-logging.basicConfig(level=logging.DEBUG)
-
-# .env 파일에서 환경 변수 로드
+# Load environment variables from .env file
 load_dotenv()
 
-# DALL-E API 키 설정
-API_KEY = os.getenv('API_KEY')
-
-if not API_KEY:
-  raise ValueError("API key not found. Please set the API key in the .env file.")
-
 app = Flask(__name__, static_folder='../client', static_url_path='')
-
-# DALL-E API endpoint 설정
-API_URL = os.getenv('API_URL')
 
 @app.route('/')
 def serve_index():
@@ -31,37 +19,36 @@ def generate_image():
     data = request.get_json()
     prompt = data.get('prompt')
 
-    # 한글 프롬프트를 영어로 번역
-    english_prompt = translate_to_english(prompt)
-    print(f'english_prompt ::::::: {english_prompt}')
+    # Set the OpenAI API key
+    client = OpenAI(
+      api_key=os.environ['API_KEY'],  # this is also the default, it can be omitted
+    )
 
-    headers = {
-      'Authorization': f'Bearer {API_KEY}',
-      'Content-Type': 'application/json'
-    }
-    payload = {
-      'prompt': english_prompt,
-      'size': '256x256',
-      'n': 1
-    }
-    response = requests.post(API_URL, headers=headers, json=payload)
-    
-    if response.status_code == 200:
-      result = response.json()
-      logging.debug(f"API Response: {result}")
-      if 'data' in result and len(result['data']) > 0:
-        image_url = result['data'][0]['url']
-        return jsonify({'image_url': image_url})
-      else:
-        return jsonify({'error': 'No image data returned'}), 500
-    else:
-      # API 응답에서 에러 메시지 추출
-      error_response = response.json()
-      logging.debug(f"API Error Response: {error_response}")
-      return jsonify({'error': error_response.get('error', {}).get('message', 'Unknown error')}), response.status_code
-  except Exception as e:
-    logging.error(f"Exception: {str(e)}")
-    return jsonify({'error': str(e)}), 500
+    # Create an image using the latest method for DALL-E
+    response = client.images.generate(
+      model="dall-e-3",
+      prompt=prompt,
+      size="1024x1024",
+      quality="standard",
+      n=1,
+    )
+
+    image_url = response.data[0].url
+    print(f'image_url ::::::: {image_url}')
+    return jsonify({'image_url': image_url})
+
+  except openai.APIError as e:
+    #Handle API error here, e.g. retry or log
+    print(f"OpenAI API returned an API Error: {e}")
+    pass
+  except openai.APIConnectionError as e:
+    #Handle connection error here
+    print(f"Failed to connect to OpenAI API: {e}")
+    pass
+  except openai.RateLimitError as e:
+    #Handle rate limit error (we recommend using exponential backoff)
+    print(f"OpenAI API request exceeded rate limit: {e}")
+    pass
 
 if __name__ == '__main__':
   app.run(debug=True)
